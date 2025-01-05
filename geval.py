@@ -18,8 +18,9 @@ def parse_args():
     parser.add_argument("--input_path", type=str)
     parser.add_argument("--prompt", type=str,
                         default='./prompts/kqa/consistency.txt')
-    parser.add_argument("--save_dir", type=str, required=True,
+    parser.add_argument("--save_dir", type=str, default="./results",
                         help="It should be a NEW DIRECTORY. Please do not use an existing")
+    parser.add_argument("--use_label", action="store_true", help="If you want to use label in the prompt, set this argument.")
     parser.add_argument("--num_sample", type=int, default=100,
                         help="If you want to test your code by sampling a small number of data, you can set this argument.")
     args = parser.parse_args()
@@ -40,7 +41,7 @@ def load_prompt(args):
     return prompt
 
 
-def prepare_model_input(prompt: str, data_path: str):
+def prepare_model_input(args, prompt: str, data_path: str):
     '''
         input : prompt, data_path (str)
         output : all_model_data (list of dict)
@@ -54,10 +55,17 @@ def prepare_model_input(prompt: str, data_path: str):
     for i in range(len(data)):
         input_temp = dict()
         input_temp['id'] = i
-        input_temp['model_input'] = prompt.format(**{
-            "input": data[i]['input'],
-            "initial_response": data[i]['output']['initial_response'],
-        })
+        if args.use_label:
+            input_temp['model_input'] = prompt.format(**{
+                "input": data[i]['input'],
+                "initial_response": data[i]['output']['initial_response'],
+                "label": data[i]['label'],
+            })
+        else:
+            input_temp['model_input'] = prompt.format(**{
+                "input": data[i]['input'],
+                "initial_response": data[i]['output']['initial_response'],
+            })
         for key in data[i].keys():
             input_temp[key] = data[i][key]
         all_model_data.append(input_temp)
@@ -77,7 +85,7 @@ def load_and_prepare_data(args):
     print("Preparing model inputs...")
 
     all_model_data = prepare_model_input(
-        prompt, args.input_path)
+        args, prompt, args.input_path)
     
     all_model_data = filter_data(all_model_data, args.num_sample)
     
@@ -126,6 +134,7 @@ async def generate_concurrently(all_model_data, start_idx, save_dir):
     
     llm = ChatOpenAI(
         model_name='gpt-4o',  # 'gpt-4o-mini' or 'gpt-4o'
+        # model_name='gpt-3.5-turbo',  # 'gpt-4o-mini' or 'gpt-4o' -> for test
         temperature=1.0,
         max_tokens=1500,
         max_retries=100,
@@ -170,6 +179,29 @@ async def main(args):
     else:
         all_results = await generate_concurrently(all_model_data, 0,
                                                   args.save_dir)
+        
+    basename = os.path.basename(args.input_path)
+    if not os.path.exists(args.save_dir):
+        os.makedirs(args.save_dir)
+    if args.use_label:
+        save_dir = os.path.join(args.save_dir, "with_label")
+    else:
+        save_dir = os.path.join(args.save_dir, "without_label")
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    total_result_path = os.path.join(save_dir, f"{basename}_total_results.json")
+    correct_counter = 0
+    for i in all_results:
+        result = i['result'][0]
+        if result:
+            correct_counter += 1
+    score = correct_counter / len(all_results)
+    make_dict = {}
+    make_dict['score'] = score
+    make_dict['result'] = all_results
+    with open(total_result_path, "w", encoding='UTF-8') as f:
+        json.dump(make_dict, f, indent=4, ensure_ascii=False)
+    
 
     # total_result_path = args.save_dir + "_total_results.json"
     # with open(os.path.join(total_result_path), "w", encoding='UTF-8') as f:
